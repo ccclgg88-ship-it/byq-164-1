@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { GameEngine } from "@/game/engine";
-import { GamePhase, GameMetrics, THIEF_CONFIGS, ThiefType } from "@/game/types";
+import { GamePhase, GameMetrics, THIEF_CONFIGS, ThiefType, POWERUP_CONFIGS, PowerUpType } from "@/game/types";
 
 const GRADE_COLORS: Record<string, string> = {
   S: "from-yellow-400 to-amber-500",
@@ -178,6 +178,38 @@ function StartOverlay({ onStart }: { onStart: () => void }) {
           })}
         </div>
 
+        <div className="w-full max-w-lg bg-white/5 rounded-xl p-4 mt-2">
+          <div className="text-white/60 text-xs mb-3 text-center">✨ 专注道具图鉴</div>
+          <div className="grid grid-cols-2 gap-2">
+            {(["shield", "rewind", "magnifier", "slowdown"] as PowerUpType[]).map((type) => {
+              const config = POWERUP_CONFIGS[type];
+              return (
+                <div
+                  key={type}
+                  className="flex items-start gap-2 px-3 py-2 rounded-lg text-xs"
+                  style={{
+                    backgroundColor: config.color + "12",
+                    border: `1px solid ${config.color}30`,
+                  }}
+                >
+                  <span className="text-lg">{config.emoji}</span>
+                  <div className="flex flex-col">
+                    <span
+                      className="font-bold"
+                      style={{ color: config.color }}
+                    >
+                      {config.label}
+                    </span>
+                    <span className="text-white/50 text-[10px] leading-tight">
+                      {config.description}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
         <button
           onClick={onStart}
           className="mt-4 px-8 py-3 rounded-xl text-lg font-bold text-white bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 transition-all duration-200 shadow-lg shadow-cyan-500/25 hover:shadow-cyan-400/40 active:scale-95"
@@ -258,6 +290,31 @@ function ResultOverlay({
             {thiefTypes.map((type) => {
               const config = THIEF_CONFIGS[type];
               const count = metrics.dodgedThieves[type];
+              return (
+                <div
+                  key={type}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm"
+                  style={{
+                    backgroundColor: count > 0 ? config.color + "20" : "#ffffff08",
+                    border: `1px solid ${count > 0 ? config.color + "40" : "#ffffff10"}`,
+                    color: count > 0 ? config.color : "#ffffff30",
+                  }}
+                >
+                  <span>{config.emoji}</span>
+                  <span>{config.label}</span>
+                  <span className="font-bold ml-1">x{count}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="w-full bg-white/5 rounded-xl p-4">
+          <div className="text-white/40 text-xs mb-3">拾取的专注道具</div>
+          <div className="flex flex-wrap gap-2">
+            {(["shield", "rewind", "magnifier", "slowdown"] as PowerUpType[]).map((type) => {
+              const config = POWERUP_CONFIGS[type];
+              const count = metrics.pickedUpPowerUps[type];
               return (
                 <div
                   key={type}

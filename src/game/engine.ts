@@ -1,15 +1,20 @@
 import {
   ThiefType,
+  PowerUpType,
   GamePhase,
   THIEF_CONFIGS,
+  POWERUP_CONFIGS,
   Player,
   TimeThief,
+  PowerUp,
   Particle,
   StarField,
   SpeedLine,
   GameMetrics,
   calculateGrade,
   getComboMultiplier,
+  getTemporaryMultiplier,
+  hasSlowdownEffect,
 } from "./types";
 
 const GAME_DURATION = 60;
@@ -25,6 +30,10 @@ const PLAYER_SIZE_RATIO = 0.55;
 const THIEF_SIZE_RATIO = 0.45;
 const TRACK_SWITCH_SPEED = 900;
 const STAR_COUNT = 80;
+const POWERUP_SPAWN_INTERVAL = 8;
+const POWERUP_MIN_SPAWN_INTERVAL = 4;
+const POWERUP_SIZE_RATIO = 0.4;
+const REWIND_FOCUS_AMOUNT = 25;
 
 interface ScorePopup {
   x: number;
@@ -46,6 +55,7 @@ export class GameEngine {
   phase: GamePhase = "start";
   player!: Player;
   thieves: TimeThief[] = [];
+  powerUps: PowerUp[] = [];
   particles: Particle[] = [];
   stars: StarField[] = [];
   speedLines: SpeedLine[] = [];
@@ -53,6 +63,7 @@ export class GameEngine {
   metrics!: GameMetrics;
 
   private spawnTimer = 0;
+  private powerUpSpawnTimer = 0;
   private gameTime = 0;
   private lastTimestamp = 0;
   private animationId = 0;
@@ -129,10 +140,12 @@ export class GameEngine {
     this.phase = "start";
     this.onPhaseChange?.("start");
     this.thieves = [];
+    this.powerUps = [];
     this.particles = [];
     this.speedLines = [];
     this.scorePopups = [];
     this.spawnTimer = 1.5;
+    this.powerUpSpawnTimer = 5;
     this.gameTime = 0;
     this.shakeTimer = 0;
     this.flashTimer = 0;
@@ -174,6 +187,14 @@ export class GameEngine {
       totalHits: 0,
       difficulty: 0,
       gameTime: 0,
+      pickedUpPowerUps: {
+        shield: 0,
+        rewind: 0,
+        magnifier: 0,
+        slowdown: 0,
+      },
+      activePowerUps: [],
+      hasShield: false,
     };
   }
 
@@ -225,8 +246,12 @@ export class GameEngine {
 
     this.updatePlayer(dt);
     this.updateSpawning(dt);
+    this.updatePowerUpSpawning(dt);
     this.updateThieves(dt);
+    this.updatePowerUps(dt);
+    this.updateActivePowerUps(dt);
     this.checkCollisions();
+    this.checkPowerUpCollisions();
     this.updateParticles(dt);
     this.updateScorePopups(dt);
     this.updateSpeedLines(dt);
@@ -311,9 +336,10 @@ export class GameEngine {
   }
 
   private updateThieves(dt: number) {
+    const slowdown = hasSlowdownEffect(this.metrics.activePowerUps) ? 0.5 : 1;
     for (const thief of this.thieves) {
       if (!thief.isActive) continue;
-      thief.x -= thief.speed * dt * 60;
+      thief.x -= thief.speed * dt * 60 * slowdown;
       thief.wobbleOffset += thief.wobbleSpeed * dt;
       if (thief.x < -thief.width * 2) {
         thief.isActive = false;
@@ -359,29 +385,52 @@ export class GameEngine {
     this.metrics.totalDodged++;
     this.metrics.dodgedThieves[thief.type]++;
 
-    const multiplier = getComboMultiplier(this.metrics.combo);
+    const comboMultiplier = getComboMultiplier(this.metrics.combo);
+    const tempMultiplier = getTemporaryMultiplier(this.metrics.activePowerUps);
+    const totalMultiplier = comboMultiplier + tempMultiplier;
     const baseScore = 10;
-    const points = Math.floor(baseScore * multiplier);
+    const points = Math.floor(baseScore * totalMultiplier);
     this.metrics.score += points;
 
     const config = THIEF_CONFIGS[thief.type];
     this.spawnDodgeParticles(thief.x, thief.y, config.color);
 
     const comboText =
-      this.metrics.combo >= 3 ? ` x${multiplier}` : "";
+      this.metrics.combo >= 3 ? ` x${totalMultiplier.toFixed(1)}` : "";
     this.scorePopups.push({
       x: thief.x,
       y: thief.y - thief.height,
       text: `+${points}${comboText}`,
       life: 0.8,
       maxLife: 0.8,
-      color: this.metrics.combo >= 5 ? "#ffd700" : config.color,
-      scale: this.metrics.combo >= 5 ? 1.3 : 1,
+      color: tempMultiplier > 0 ? "#fbbf24" : (this.metrics.combo >= 5 ? "#ffd700" : config.color),
+      scale: tempMultiplier > 0 ? 1.4 : (this.metrics.combo >= 5 ? 1.3 : 1),
     });
   }
 
   private handleHit(thief: TimeThief) {
     const config = THIEF_CONFIGS[thief.type];
+
+    if (this.metrics.hasShield) {
+      this.metrics.hasShield = false;
+      this.metrics.activePowerUps = this.metrics.activePowerUps.filter(
+        (p) => p.type !== "shield"
+      );
+      this.triggerShake(4, 0.2);
+      this.triggerFlash("#60a5fa40", 0.2);
+      this.spawnShieldBreakParticles(this.player.x, this.player.y);
+      this.scorePopups.push({
+        x: this.player.x,
+        y: this.player.y - this.player.height,
+        text: "护盾抵挡!",
+        life: 1.0,
+        maxLife: 1.0,
+        color: "#60a5fa",
+        scale: 1.3,
+      });
+      return;
+    }
+
     this.metrics.focusTime = Math.max(0, this.metrics.focusTime - config.focusCost);
     this.metrics.combo = 0;
     this.metrics.totalHits++;
@@ -439,6 +488,40 @@ export class GameEngine {
     }
   }
 
+  private spawnShieldBreakParticles(x: number, y: number) {
+    for (let i = 0; i < 16; i++) {
+      const angle = (Math.PI * 2 * i) / 16;
+      const speed = 100 + Math.random() * 80;
+      this.particles.push({
+        x,
+        y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        life: 0.5 + Math.random() * 0.3,
+        maxLife: 0.8,
+        color: i % 2 === 0 ? "#60a5fa" : "#93c5fd",
+        size: 3 + Math.random() * 4,
+      });
+    }
+  }
+
+  private spawnPowerUpParticles(x: number, y: number, color: string) {
+    for (let i = 0; i < 16; i++) {
+      const angle = (Math.PI * 2 * i) / 16 + Math.random() * 0.3;
+      const speed = 80 + Math.random() * 120;
+      this.particles.push({
+        x,
+        y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        life: 0.5 + Math.random() * 0.3,
+        maxLife: 0.8,
+        color,
+        size: 3 + Math.random() * 3,
+      });
+    }
+  }
+
   private updateParticles(dt: number) {
     for (const p of this.particles) {
       p.x += p.vx * dt;
@@ -456,6 +539,137 @@ export class GameEngine {
       sp.life -= dt;
     }
     this.scorePopups = this.scorePopups.filter((sp) => sp.life > 0);
+  }
+
+  private updatePowerUpSpawning(dt: number) {
+    this.powerUpSpawnTimer -= dt;
+    if (this.powerUpSpawnTimer <= 0) {
+      this.spawnPowerUp();
+      const interval =
+        POWERUP_SPAWN_INTERVAL -
+        (POWERUP_SPAWN_INTERVAL - POWERUP_MIN_SPAWN_INTERVAL) * this.metrics.difficulty;
+      this.powerUpSpawnTimer = interval * (0.7 + Math.random() * 0.6);
+    }
+  }
+
+  private spawnPowerUp() {
+    const trackIndex = Math.floor(Math.random() * TRACK_COUNT);
+    const types: PowerUpType[] = ["shield", "rewind", "magnifier", "slowdown"];
+    const weights = types.map((t) => POWERUP_CONFIGS[t].frequency);
+    const totalWeight = weights.reduce((a, b) => a + b, 0);
+    let r = Math.random() * totalWeight;
+    let chosenType: PowerUpType = "shield";
+    for (let i = 0; i < types.length; i++) {
+      r -= weights[i];
+      if (r <= 0) {
+        chosenType = types[i];
+        break;
+      }
+    }
+
+    const config = POWERUP_CONFIGS[chosenType];
+    const size = this.trackHeight * POWERUP_SIZE_RATIO;
+
+    this.powerUps.push({
+      type: chosenType,
+      trackIndex,
+      x: this.width + size,
+      y: this.trackYPositions[trackIndex],
+      width: size,
+      height: size,
+      isActive: true,
+      isPickedUp: false,
+      wobbleOffset: Math.random() * Math.PI * 2,
+      wobbleSpeed: 2 + Math.random() * 1.5,
+      pulsePhase: Math.random() * Math.PI * 2,
+    });
+  }
+
+  private updatePowerUps(dt: number) {
+    const slowdown = hasSlowdownEffect(this.metrics.activePowerUps) ? 0.5 : 1;
+    for (const powerUp of this.powerUps) {
+      if (!powerUp.isActive) continue;
+      powerUp.x -= 200 * dt * slowdown;
+      powerUp.wobbleOffset += powerUp.wobbleSpeed * dt;
+      powerUp.pulsePhase += dt * 3;
+      if (powerUp.x < -powerUp.width * 2) {
+        powerUp.isActive = false;
+      }
+    }
+    this.powerUps = this.powerUps.filter((p) => p.isActive && !p.isPickedUp);
+  }
+
+  private updateActivePowerUps(dt: number) {
+    for (const active of this.metrics.activePowerUps) {
+      if (active.totalDuration > 0) {
+        active.remainingTime -= dt;
+      }
+    }
+    this.metrics.activePowerUps = this.metrics.activePowerUps.filter(
+      (p) => p.totalDuration === 0 || p.remainingTime > 0
+    );
+  }
+
+  private checkPowerUpCollisions() {
+    const p = this.player;
+
+    for (const powerUp of this.powerUps) {
+      if (!powerUp.isActive || powerUp.isPickedUp) continue;
+
+      const dx = powerUp.x - p.x;
+      const dy = powerUp.y - p.y;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      const hitRadius = (p.width + powerUp.width) / 2;
+
+      if (distance < hitRadius && powerUp.trackIndex === p.trackIndex) {
+        powerUp.isPickedUp = true;
+        powerUp.isActive = false;
+        this.handlePowerUpPickup(powerUp);
+      }
+    }
+  }
+
+  private handlePowerUpPickup(powerUp: PowerUp) {
+    const config = POWERUP_CONFIGS[powerUp.type];
+    this.metrics.pickedUpPowerUps[powerUp.type]++;
+
+    switch (powerUp.type) {
+      case "shield":
+        this.metrics.hasShield = true;
+        this.metrics.activePowerUps.push({
+          type: "shield",
+          remainingTime: 0,
+          totalDuration: 0,
+        });
+        break;
+      case "rewind":
+        this.metrics.focusTime = Math.min(
+          this.metrics.maxFocusTime,
+          this.metrics.focusTime + REWIND_FOCUS_AMOUNT
+        );
+        break;
+      case "magnifier":
+      case "slowdown":
+        this.metrics.activePowerUps.push({
+          type: powerUp.type,
+          remainingTime: config.duration,
+          totalDuration: config.duration,
+        });
+        break;
+    }
+
+    this.spawnPowerUpParticles(powerUp.x, powerUp.y, config.color);
+    this.triggerFlash(config.glowColor, 0.15);
+
+    this.scorePopups.push({
+      x: powerUp.x,
+      y: powerUp.y - powerUp.height,
+      text: config.label,
+      life: 1.2,
+      maxLife: 1.2,
+      color: config.color,
+      scale: 1.2,
+    });
   }
 
   private updateStars(dt: number) {
@@ -597,6 +811,7 @@ export class GameEngine {
     this.renderSpeedLinesLayer();
     this.renderTracks();
     this.renderThieves();
+    this.renderPowerUps();
     this.renderPlayer();
     this.renderParticlesLayer();
     this.renderScorePopupsLayer();
@@ -803,6 +1018,51 @@ export class GameEngine {
     }
   }
 
+  private renderPowerUps() {
+    const ctx = this.ctx;
+
+    for (const powerUp of this.powerUps) {
+      if (!powerUp.isActive) continue;
+      const config = POWERUP_CONFIGS[powerUp.type];
+      const wobbleY = Math.sin(powerUp.wobbleOffset) * 5;
+      const pulseScale = 1 + Math.sin(powerUp.pulsePhase) * 0.1;
+      const cx = powerUp.x;
+      const cy = powerUp.y + wobbleY;
+
+      ctx.save();
+
+      ctx.shadowColor = config.glowColor;
+      ctx.shadowBlur = 25;
+
+      const radius = (powerUp.width / 2) * pulseScale;
+      ctx.fillStyle = config.color + "25";
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius * 1.3, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = config.color + "40";
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.shadowBlur = 0;
+
+      ctx.font = `${powerUp.height * 0.75 * pulseScale}px serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(config.emoji, cx, cy);
+
+      const labelY = cy + powerUp.height * 0.5 + 8;
+      ctx.font = `bold ${Math.max(10, this.trackHeight * 0.11)}px "Noto Sans SC", sans-serif`;
+      ctx.fillStyle = config.color;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      ctx.fillText(config.label, cx, labelY);
+
+      ctx.restore();
+    }
+  }
+
   private renderParticlesLayer() {
     const ctx = this.ctx;
     for (const p of this.particles) {
@@ -903,6 +1163,76 @@ export class GameEngine {
     ctx.textAlign = "right";
     ctx.textBaseline = "top";
     ctx.fillText(`${Math.ceil(timeLeft)}s`, this.width - 20, 15);
+
+    let powerUpX = 20;
+    const powerUpY = 55;
+    const powerUpSize = 36;
+    const powerUpGap = 10;
+
+    if (this.metrics.hasShield) {
+      const config = POWERUP_CONFIGS.shield;
+      ctx.save();
+      ctx.shadowColor = config.glowColor;
+      ctx.shadowBlur = 15;
+      ctx.fillStyle = config.color + "30";
+      ctx.beginPath();
+      ctx.arc(powerUpX + powerUpSize / 2, powerUpY + powerUpSize / 2, powerUpSize / 2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.font = `${powerUpSize * 0.65}px serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(config.emoji, powerUpX + powerUpSize / 2, powerUpY + powerUpSize / 2);
+      ctx.font = `bold 10px "Noto Sans SC", sans-serif`;
+      ctx.fillStyle = config.color;
+      ctx.fillText("护盾", powerUpX + powerUpSize / 2, powerUpY + powerUpSize + 12);
+      ctx.restore();
+      powerUpX += powerUpSize + powerUpGap;
+    }
+
+    for (const active of this.metrics.activePowerUps) {
+      if (active.type === "shield") continue;
+      const config = POWERUP_CONFIGS[active.type];
+      const progress = active.remainingTime / active.totalDuration;
+
+      ctx.save();
+      ctx.shadowColor = config.glowColor;
+      ctx.shadowBlur = 15;
+
+      ctx.fillStyle = config.color + "25";
+      ctx.beginPath();
+      ctx.arc(powerUpX + powerUpSize / 2, powerUpY + powerUpSize / 2, powerUpSize / 2, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.strokeStyle = config.color;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(
+        powerUpX + powerUpSize / 2,
+        powerUpY + powerUpSize / 2,
+        powerUpSize / 2 + 3,
+        -Math.PI / 2,
+        -Math.PI / 2 + progress * Math.PI * 2
+      );
+      ctx.stroke();
+
+      ctx.shadowBlur = 0;
+      ctx.font = `${powerUpSize * 0.6}px serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(config.emoji, powerUpX + powerUpSize / 2, powerUpY + powerUpSize / 2);
+
+      ctx.font = `bold 10px "Noto Sans SC", sans-serif`;
+      ctx.fillStyle = config.color;
+      ctx.fillText(
+        `${Math.ceil(active.remainingTime)}s`,
+        powerUpX + powerUpSize / 2,
+        powerUpY + powerUpSize + 12
+      );
+
+      ctx.restore();
+      powerUpX += powerUpSize + powerUpGap;
+    }
   }
 
   private renderFlash() {

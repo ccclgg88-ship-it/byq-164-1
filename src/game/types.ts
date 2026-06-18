@@ -1,5 +1,7 @@
 export type ThiefType = 'video' | 'message' | 'meeting' | 'notification' | 'game';
 
+export type PowerUpType = 'shield' | 'rewind' | 'magnifier' | 'slowdown';
+
 export type GamePhase = 'start' | 'playing' | 'result';
 
 export type Grade = 'S' | 'A' | 'B' | 'C' | 'D';
@@ -67,6 +69,80 @@ export const THIEF_CONFIGS: Record<ThiefType, ThiefConfig> = {
     glowColor: '#34d39980',
   },
 };
+
+export interface PowerUpConfig {
+  type: PowerUpType;
+  label: string;
+  emoji: string;
+  description: string;
+  duration: number;
+  frequency: number;
+  color: string;
+  glowColor: string;
+}
+
+export const POWERUP_CONFIGS: Record<PowerUpType, PowerUpConfig> = {
+  shield: {
+    type: 'shield',
+    label: '专注护盾',
+    emoji: '🛡️',
+    description: '抵挡一次被时间小偷抓住',
+    duration: 0,
+    frequency: 0.25,
+    color: '#60a5fa',
+    glowColor: '#60a5fa80',
+  },
+  rewind: {
+    type: 'rewind',
+    label: '时间回流',
+    emoji: '⏪',
+    description: '立即恢复25点专注时间',
+    duration: 0,
+    frequency: 0.3,
+    color: '#34d399',
+    glowColor: '#34d39980',
+  },
+  magnifier: {
+    type: 'magnifier',
+    label: '连击放大镜',
+    emoji: '🔍',
+    description: '10秒内得分倍率额外+1',
+    duration: 10,
+    frequency: 0.25,
+    color: '#fbbf24',
+    glowColor: '#fbbf2480',
+  },
+  slowdown: {
+    type: 'slowdown',
+    label: '减速领域',
+    emoji: '❄️',
+    description: '8秒内所有小偷速度减半',
+    duration: 8,
+    frequency: 0.2,
+    color: '#22d3ee',
+    glowColor: '#22d3ee80',
+  },
+};
+
+export interface PowerUp {
+  type: PowerUpType;
+  trackIndex: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  isActive: boolean;
+  isPickedUp: boolean;
+  wobbleOffset: number;
+  wobbleSpeed: number;
+  pulsePhase: number;
+}
+
+export interface ActivePowerUp {
+  type: PowerUpType;
+  remainingTime: number;
+  totalDuration: number;
+}
 
 export interface Player {
   trackIndex: number;
@@ -136,6 +212,9 @@ export interface GameMetrics {
   totalHits: number;
   difficulty: number;
   gameTime: number;
+  pickedUpPowerUps: Record<PowerUpType, number>;
+  activePowerUps: ActivePowerUp[];
+  hasShield: boolean;
 }
 
 export function calculateGrade(metrics: GameMetrics): Grade {
@@ -157,4 +236,13 @@ export function getComboMultiplier(combo: number): number {
   if (combo >= 5) return 2.0;
   if (combo >= 3) return 1.5;
   return 1.0;
+}
+
+export function getTemporaryMultiplier(activePowerUps: ActivePowerUp[]): number {
+  const hasMagnifier = activePowerUps.some(p => p.type === 'magnifier');
+  return hasMagnifier ? 1.0 : 0;
+}
+
+export function hasSlowdownEffect(activePowerUps: ActivePowerUp[]): boolean {
+  return activePowerUps.some(p => p.type === 'slowdown');
 }
